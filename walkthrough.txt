@@ -1,0 +1,537 @@
+================================================================================
+          WALKTHROUGH LENGKAP PROJECT GNS3 "COBA"
+          Simulasi Jaringan ISP dengan BGP & OSPF
+================================================================================
+
+DAFTAR ISI
+----------
+1. Pendahuluan & Konsep Dasar
+2. Arsitektur Jaringan
+3. Detail Setiap Perangkat & Konfigurasi
+4. Peta IP Address Lengkap
+5. Alur Routing — Bagaimana Data Mengalir
+6. Ringkasan Protokol
+7. Tujuan Lab
+
+================================================================================
+1. PENDAHULUAN & KONSEP DASAR
+================================================================================
+
+Project ini adalah simulasi JARINGAN ISP (Internet Service Provider) yang
+menghubungkan 3 pelanggan (customer) melalui infrastruktur backbone ISP
+menggunakan protokol routing OSPF dan BGP.
+
+--- Apa itu ISP Network? ---
+
+Bayangkan ISP seperti Telkom/Indosat. Mereka punya jaringan internal (backbone)
+yang menghubungkan pelanggan-pelanggannya. Pelanggan bisa saling komunikasi
+melalui jaringan ISP ini.
+
+--- Apa itu BGP dan OSPF? ---
+
+* OSPF (Open Shortest Path First)
+  = Protokol routing INTERNAL ISP.
+  = Digunakan agar router-router ISP saling tahu jalur terbaik ke satu
+    sama lain.
+  = Bekerja di DALAM satu AS (Autonomous System).
+
+* BGP (Border Gateway Protocol)
+  = Protokol routing ANTAR ORGANISASI.
+  = Digunakan antara ISP dan pelanggan, atau antar ISP.
+  = Ada 2 jenis:
+    - iBGP = BGP di dalam AS yang sama (sesama ISP)
+    - eBGP = BGP di antara AS yang berbeda (ISP <-> Customer)
+
+* AS (Autonomous System)
+  = Nomor identitas jaringan. Setiap organisasi punya AS Number sendiri.
+  = Contoh: Telkom punya AS 7713, Google punya AS 15169.
+
+* Loopback Interface
+  = Interface virtual yang selalu UP (tidak pernah mati).
+  = Digunakan sebagai identitas router (Router ID).
+  = BGP sesama ISP (iBGP) berkomunikasi via loopback agar stabil.
+
+* Route Reflector
+  = Router khusus di iBGP yang bertugas "memantulkan" rute ke semua client.
+  = Tanpa ini, semua router iBGP harus saling peer (full-mesh), repot!
+
+
+================================================================================
+2. ARSITEKTUR JARINGAN
+================================================================================
+
+--- Gambaran Besar ---
+
++---------------------------------------------------------------------+
+|                        ISP (AS 99)                                  |
+|                                                                     |
+|              +-----------+                                          |
+|              |   RR-A    |  Route Reflector                         |
+|              |  4.4.4.4  |  (BGP mirror)                            |
+|              +-----+-----+                                          |
+|                    | 10.10.10.2/31                                   |
+|                    |                                                |
+|    +---------------+---------------+                                |
+|    |               |               |                                |
+|  +-+-------+  +----+------+  +-----+-----+                         |
+|  | CGW-A   |--| CGW-B     |--| CGW-C     |  Core Gateway           |
+|  | 1.1.1.1 |  | 2.2.2.2   |  | 3.3.3.3   |  Routers               |
+|  +-+-------+  +----+------+  +-----+-----+                         |
+|    |               |               |          <== OSPF internal     |
++----+---------------+---------------+----------------------------+   |
+     | eBGP          | eBGP          | eBGP    <== BGP ke customer    |
+     |               |               |                                |
++----+------+  +-----+-----+  +-----+-----+                          |
+|PE-Cust-A  |  |PE-Cust-B  |  |PE-Cust-C  |   Customer Edge          |
+|  AS 100   |  |  AS 200   |  |  AS 300   |   Routers                |
++-+--+--+---+  +-+--+--+---+  +-+--+--+---+                          |
+  |  |  |        |  |  |        |  |  |                               |
+ PC1 PC2 PC3   PC4 PC5 PC6   PC7 PC8 PC9      End Users              |
+                                                                      |
++---------------------------------------------------------------------+
+
+--- Penjelasan Sederhana ---
+
+Bayangkan seperti ini:
+- ISP (AS 99) = Kantor pos pusat dengan 3 cabang (CGW-A, CGW-B, CGW-C)
+- RR-A = Manajer yang menyebarkan info rute ke semua cabang
+- PE-Cust-A/B/C = Kantor pelanggan yang terhubung ke cabang ISP
+- PC1-PC9 = Karyawan di kantor pelanggan
+
+Jika karyawan di Customer A mau kirim "surat" ke Customer C,
+suratnya lewat cabang ISP, dikirim ke cabang lain, lalu sampai tujuan.
+
+
+================================================================================
+3. DETAIL SETIAP PERANGKAT & KONFIGURASI
+================================================================================
+
+----------------------------------------------------------------------
+3.1  CGW-A (Core Gateway A) — Router Inti ISP #1
+----------------------------------------------------------------------
+
+Hostname    : CGW-A
+Loopback    : 1.1.1.1/32
+AS Number   : 99 (ISP)
+Console     : telnet localhost 5004
+
+Interface       | IP Address      | Subnet | Terhubung Ke
+----------------|-----------------|--------|---------------------------
+Loopback0       | 1.1.1.1         | /32    | Identitas router
+FastEthernet0/0 | 10.10.10.0      | /31    | CGW-B (10.10.10.1)
+FastEthernet1/0 | 10.10.10.2      | /31    | RR-A (10.10.10.3)
+FastEthernet2/0 | 10.10.10.6      | /31    | CGW-C (10.10.10.7)
+FastEthernet3/0 | 20.20.20.10     | /31    | PE-Cust-A (20.20.20.11)
+
+OSPF:
+  router ospf 1
+    router-id 1.1.1.1
+    network 1.1.1.1 0.0.0.0 area 0        <-- iklankan loopback
+    network 10.10.10.0 0.0.0.1 area 0      <-- link ke CGW-B
+    network 10.10.10.2 0.0.0.1 area 0      <-- link ke RR-A
+    network 10.10.10.6 0.0.0.1 area 0      <-- link ke CGW-C
+
+BGP:
+  router bgp 99
+    neighbor 4.4.4.4 remote-as 99          <-- iBGP ke RR-A
+    neighbor 4.4.4.4 update-source Loopback0
+    neighbor 4.4.4.4 next-hop-self
+    neighbor 20.20.20.11 remote-as 100     <-- eBGP ke PE-Cust-A
+
+PENJELASAN:
+  - OSPF dijalankan di SEMUA interface backbone (10.10.10.x) agar semua
+    router ISP bisa saling reach.
+  - iBGP ke RR-A menggunakan Loopback (update-source Loopback0) agar
+    koneksi BGP tetap stabil meskipun salah satu interface fisik mati.
+  - next-hop-self artinya: "kalau ada rute dari customer, saya ubah
+    next-hop-nya jadi IP saya, agar router ISP lain bisa reach."
+  - eBGP ke PE-Cust-A menggunakan IP fisik langsung (point-to-point).
+
+
+----------------------------------------------------------------------
+3.2  CGW-B (Core Gateway B) — Router Inti ISP #2
+----------------------------------------------------------------------
+
+Hostname    : CGW-B
+Loopback    : 2.2.2.2/32
+AS Number   : 99 (ISP)
+Console     : telnet localhost 5005
+
+Interface       | IP Address      | Subnet | Terhubung Ke
+----------------|-----------------|--------|---------------------------
+Loopback0       | 2.2.2.2         | /32    | Identitas router
+FastEthernet0/0 | 10.10.10.1      | /31    | CGW-A (10.10.10.0)
+FastEthernet1/0 | 10.10.10.4      | /31    | CGW-C (10.10.10.5)
+FastEthernet2/0 | 20.20.20.14     | /31    | PE-Cust-B (20.20.20.15)
+
+OSPF:
+  router ospf 1
+    router-id 2.2.2.2
+    network 2.2.2.2 0.0.0.0 area 0
+    network 10.10.10.0 0.0.0.1 area 0
+    network 10.10.10.4 0.0.0.1 area 0
+
+BGP:
+  router bgp 99
+    neighbor 4.4.4.4 remote-as 99          <-- iBGP ke RR-A
+    neighbor 4.4.4.4 update-source Loopback0
+    neighbor 4.4.4.4 next-hop-self
+    neighbor 20.20.20.15 remote-as 200     <-- eBGP ke PE-Cust-B
+
+
+----------------------------------------------------------------------
+3.3  CGW-C (Core Gateway C) — Router Inti ISP #3
+----------------------------------------------------------------------
+
+Hostname    : CGW-C
+Loopback    : 3.3.3.3/32
+AS Number   : 99 (ISP)
+Console     : telnet localhost 5007
+
+Interface       | IP Address      | Subnet | Terhubung Ke
+----------------|-----------------|--------|---------------------------
+Loopback0       | 3.3.3.3         | /32    | Identitas router
+FastEthernet0/0 | 10.10.10.5      | /31    | CGW-B (10.10.10.4)
+FastEthernet1/0 | 10.10.10.7      | /31    | CGW-A (10.10.10.6)
+FastEthernet2/0 | 20.20.20.12     | /31    | PE-Cust-C (20.20.20.13)
+
+OSPF:
+  router ospf 1
+    router-id 3.3.3.3
+    network 3.3.3.3 0.0.0.0 area 0
+    network 10.10.10.4 0.0.0.1 area 0
+    network 10.10.10.6 0.0.0.1 area 0
+
+BGP:
+  router bgp 99
+    neighbor 4.4.4.4 remote-as 99          <-- iBGP ke RR-A
+    neighbor 4.4.4.4 update-source Loopback0
+    neighbor 4.4.4.4 next-hop-self
+    neighbor 20.20.20.13 remote-as 300     <-- eBGP ke PE-Cust-C
+
+
+----------------------------------------------------------------------
+3.4  RR-A (Route Reflector) — "Cermin" Rute BGP
+----------------------------------------------------------------------
+
+Hostname    : RR-A
+Loopback    : 4.4.4.4/32
+AS Number   : 99 (ISP)
+Console     : telnet localhost 5006
+
+Interface       | IP Address      | Subnet | Terhubung Ke
+----------------|-----------------|--------|---------------------------
+Loopback0       | 4.4.4.4         | /32    | Identitas router
+FastEthernet0/0 | 10.10.10.3      | /31    | CGW-A (10.10.10.2)
+
+OSPF:
+  router ospf 1
+    router-id 4.4.4.4
+    network 4.4.4.4 0.0.0.0 area 0
+    network 10.10.10.2 0.0.0.1 area 0
+
+BGP:
+  router bgp 99
+    neighbor 1.1.1.1 remote-as 99          <-- iBGP ke CGW-A
+    neighbor 1.1.1.1 update-source Loopback0
+    neighbor 1.1.1.1 route-reflector-client  <-- DIJADIKAN CLIENT!
+    neighbor 1.1.1.1 next-hop-self
+
+    neighbor 2.2.2.2 remote-as 99          <-- iBGP ke CGW-B
+    neighbor 2.2.2.2 update-source Loopback0
+    neighbor 2.2.2.2 route-reflector-client
+    neighbor 2.2.2.2 next-hop-self
+
+    neighbor 3.3.3.3 remote-as 99          <-- iBGP ke CGW-C
+    neighbor 3.3.3.3 update-source Loopback0
+    neighbor 3.3.3.3 route-reflector-client
+    neighbor 3.3.3.3 next-hop-self
+
+PENJELASAN ROUTE REFLECTOR:
+  Kenapa perlu Route Reflector?
+
+  Dalam iBGP, ada aturan: RUTE YANG DITERIMA DARI iBGP NEIGHBOR
+  TIDAK BOLEH DITERUSKAN KE iBGP NEIGHBOR LAIN.
+
+  Jadi kalau CGW-A dapat rute customer (192.168.10.0/24) via eBGP,
+  lalu diteruskan ke RR-A via iBGP... tanpa Route Reflector,
+  RR-A TIDAK BOLEH meneruskan rute itu ke CGW-B dan CGW-C.
+
+  SOLUSI: Jadikan RR-A sebagai Route Reflector. Dengan command
+  "route-reflector-client", RR-A BOLEH merefleksikan (meneruskan)
+  rute iBGP dari satu client ke client lain.
+
+  Hasilnya:
+  - CGW-A kirim rute ke RR-A
+  - RR-A reflect ke CGW-B dan CGW-C
+  - Semua CGW jadi tahu rute semua customer!
+
+  Tanpa RR-A, kita harus buat full-mesh iBGP:
+  CGW-A <-> CGW-B, CGW-A <-> CGW-C, CGW-B <-> CGW-C (3 koneksi)
+  Dengan RR-A, cukup 3 koneksi: CGW-A/B/C -> RR-A saja.
+  Lebih hemat dan scalable!
+
+
+----------------------------------------------------------------------
+3.5  PE-Cust-A (Customer A) — AS 100
+----------------------------------------------------------------------
+
+Hostname    : PE-Cust-A
+AS Number   : 100
+Console     : telnet localhost 5000
+
+Interface       | IP Address      | Subnet | Terhubung Ke
+----------------|-----------------|--------|---------------------------
+FastEthernet0/0 | 20.20.20.11     | /31    | CGW-A (20.20.20.10) ke ISP
+FastEthernet1/0 | 192.168.10.1    | /24    | PC1 (LAN 1)
+FastEthernet2/0 | 192.168.11.1    | /24    | PC2 (LAN 2)
+FastEthernet3/0 | 192.168.12.1    | /24    | PC3 (LAN 3)
+
+BGP:
+  router bgp 100
+    network 192.168.10.0                   <-- iklankan LAN PC1
+    network 192.168.11.0                   <-- iklankan LAN PC2
+    network 192.168.12.0                   <-- iklankan LAN PC3
+    neighbor 20.20.20.10 remote-as 99      <-- eBGP ke ISP (CGW-A)
+
+PENJELASAN:
+  - PE-Cust-A menjalankan BGP AS 100 (AS Number customer).
+  - Dia mengiklankan 3 network LAN-nya ke ISP.
+  - ISP (CGW-A) menerima rute ini, lalu via RR-A diteruskan ke
+    CGW-B dan CGW-C, sehingga seluruh ISP tahu cara reach Customer A.
+  - Tidak ada OSPF di sini karena ini jaringan customer, bukan ISP.
+
+
+----------------------------------------------------------------------
+3.6  PE-Cust-B (Customer B) — AS 200
+----------------------------------------------------------------------
+
+Hostname    : PE-Cust-B
+AS Number   : 200
+Console     : telnet localhost 5002
+
+Interface       | IP Address      | Subnet | Terhubung Ke
+----------------|-----------------|--------|---------------------------
+FastEthernet0/0 | 20.20.20.15     | /31    | CGW-B (20.20.20.14) ke ISP
+FastEthernet1/0 | 192.169.20.1    | /24    | PC4 (LAN 1)
+FastEthernet2/0 | 192.169.21.1    | /24    | PC5 (LAN 2)
+FastEthernet3/0 | 192.169.22.1    | /24    | PC6 (LAN 3)
+
+BGP:
+  router bgp 200
+    network 192.169.20.0
+    network 192.169.21.0
+    network 192.169.22.0
+    neighbor 20.20.20.14 remote-as 99      <-- eBGP ke ISP (CGW-B)
+
+
+----------------------------------------------------------------------
+3.7  PE-Cust-C (Customer C) — AS 300
+----------------------------------------------------------------------
+
+Hostname    : PE-Cust-C
+AS Number   : 300
+Console     : telnet localhost 5001
+
+Interface       | IP Address      | Subnet | Terhubung Ke
+----------------|-----------------|--------|---------------------------
+FastEthernet0/0 | 20.20.20.13     | /31    | CGW-C (20.20.20.12) ke ISP
+FastEthernet1/0 | 192.170.30.1    | /24    | PC7 (LAN 1)
+FastEthernet2/0 | 192.170.31.1    | /24    | PC8 (LAN 2)
+FastEthernet3/0 | 192.170.32.1    | /24    | PC9 (LAN 3)
+
+BGP:
+  router bgp 300
+    network 192.170.30.0
+    network 192.170.31.0
+    network 192.170.32.0
+    neighbor 20.20.20.12 remote-as 99      <-- eBGP ke ISP (CGW-C)
+
+
+----------------------------------------------------------------------
+3.8  PC1 - PC9 (VPCS / Virtual PC)
+----------------------------------------------------------------------
+
+PC   | Terhubung Ke     | Port     | Network        | Console
+-----|------------------|----------|----------------|------------------
+PC1  | PE-Cust-A f1/0   | e0       | 192.168.10.0/24| telnet localhost 5003
+PC2  | PE-Cust-A f2/0   | e0       | 192.168.11.0/24| telnet localhost 5009
+PC3  | PE-Cust-A f3/0   | e0       | 192.168.12.0/24| telnet localhost 5011
+PC4  | PE-Cust-B f1/0   | e0       | 192.169.20.0/24| telnet localhost 5013
+PC5  | PE-Cust-B f2/0   | e0       | 192.169.21.0/24| telnet localhost 5015
+PC6  | PE-Cust-B f3/0   | e0       | 192.169.22.0/24| telnet localhost 5017
+PC7  | PE-Cust-C f1/0   | e0       | 192.170.30.0/24| telnet localhost 5019
+PC8  | PE-Cust-C f2/0   | e0       | 192.170.31.0/24| telnet localhost 5021
+PC9  | PE-Cust-C f3/0   | e0       | 192.170.32.0/24| telnet localhost 5023
+
+
+================================================================================
+4. PETA IP ADDRESS LENGKAP
+================================================================================
+
+--- Loopback (Identitas Router) ---
+
+Router  | Loopback IP   | AS
+--------|---------------|----
+CGW-A   | 1.1.1.1       | 99
+CGW-B   | 2.2.2.2       | 99
+CGW-C   | 3.3.3.3       | 99
+RR-A    | 4.4.4.4       | 99
+
+--- Backbone ISP (10.10.10.x/31) ---
+
+Link                              | Sisi A         | Sisi B
+----------------------------------|----------------|----------------
+CGW-A f0/0 <-> CGW-B f0/0        | 10.10.10.0     | 10.10.10.1
+CGW-A f1/0 <-> RR-A f0/0         | 10.10.10.2     | 10.10.10.3
+CGW-B f1/0 <-> CGW-C f0/0        | 10.10.10.4     | 10.10.10.5
+CGW-A f2/0 <-> CGW-C f1/0        | 10.10.10.6     | 10.10.10.7
+
+--- Link ISP <-> Customer (20.20.20.x/31) ---
+
+Link                              | ISP Side       | Customer Side  | eBGP
+----------------------------------|----------------|----------------|----------
+CGW-A f3/0 <-> PE-Cust-A f0/0    | 20.20.20.10    | 20.20.20.11    | AS99<->100
+CGW-C f2/0 <-> PE-Cust-C f0/0    | 20.20.20.12    | 20.20.20.13    | AS99<->300
+CGW-B f2/0 <-> PE-Cust-B f0/0    | 20.20.20.14    | 20.20.20.15    | AS99<->200
+
+--- LAN Customer ---
+
+Customer A (AS 100):
+  192.168.10.0/24 -> PC1 (gateway: 192.168.10.1)
+  192.168.11.0/24 -> PC2 (gateway: 192.168.11.1)
+  192.168.12.0/24 -> PC3 (gateway: 192.168.12.1)
+
+Customer B (AS 200):
+  192.169.20.0/24 -> PC4 (gateway: 192.169.20.1)
+  192.169.21.0/24 -> PC5 (gateway: 192.169.21.1)
+  192.169.22.0/24 -> PC6 (gateway: 192.169.22.1)
+
+Customer C (AS 300):
+  192.170.30.0/24 -> PC7 (gateway: 192.170.30.1)
+  192.170.31.0/24 -> PC8 (gateway: 192.170.31.1)
+  192.170.32.0/24 -> PC9 (gateway: 192.170.32.1)
+
+
+================================================================================
+5. ALUR ROUTING — BAGAIMANA DATA MENGALIR?
+================================================================================
+
+--- Contoh: PC1 (Customer A) kirim data ke PC7 (Customer C) ---
+
+Langkah 1: PC1 kirim paket
+  PC1 (192.168.10.x) -> gateway 192.168.10.1 (PE-Cust-A)
+  "Saya mau kirim ke 192.170.30.x, tapi itu bukan jaringan saya.
+   Saya kirim ke gateway saya."
+
+Langkah 2: PE-Cust-A cek routing table
+  PE-Cust-A punya rute: 192.170.30.0/24 via BGP next-hop 20.20.20.10
+  "Rute ini saya pelajari dari ISP via eBGP. Saya forward ke CGW-A."
+  PE-Cust-A -> CGW-A (20.20.20.10)
+
+Langkah 3: CGW-A cek routing table
+  CGW-A punya rute: 192.170.30.0/24 learned via iBGP dari RR-A
+  Next-hop: 3.3.3.3 (loopback CGW-C)
+  "Untuk reach 3.3.3.3, OSPF bilang lewat link 10.10.10.6 (langsung)
+   atau 10.10.10.0 -> CGW-B -> 10.10.10.4 -> CGW-C (lewat CGW-B)."
+  CGW-A -> CGW-C (jalur langsung via 10.10.10.6/7)
+
+Langkah 4: CGW-C cek routing table
+  CGW-C punya rute: 192.170.30.0/24 via eBGP next-hop 20.20.20.13
+  "Rute ini saya terima langsung dari PE-Cust-C via eBGP."
+  CGW-C -> PE-Cust-C (20.20.20.13)
+
+Langkah 5: PE-Cust-C forward ke PC7
+  PE-Cust-C cek: 192.170.30.0/24 adalah directly connected di f1/0
+  PE-Cust-C -> PC7
+
+DATA SAMPAI! PC1 -> PE-Cust-A -> CGW-A -> CGW-C -> PE-Cust-C -> PC7
+
+--- Bagaimana Rute Bisa "Ketahuan"? ---
+
+Proses BGP redistribusi rute:
+
+  1. PE-Cust-A (AS 100) advertise ke CGW-A:
+     "Saya punya 192.168.10.0/24, 192.168.11.0/24, 192.168.12.0/24"
+
+  2. CGW-A terima rute dari eBGP, lalu kirim ke RR-A via iBGP:
+     "Hei RR-A, ada rute 192.168.10.0/24 dari AS 100"
+
+  3. RR-A sebagai Route Reflector, reflect ke CGW-B dan CGW-C:
+     "Hei CGW-B dan CGW-C, ada rute 192.168.10.0/24, next-hop CGW-A"
+
+  4. Sekarang CGW-B dan CGW-C juga tahu cara reach ke Customer A!
+
+  5. Proses yang sama terjadi untuk Customer B dan Customer C.
+
+  Hasilnya: SEMUA router ISP tahu rute ke SEMUA customer.
+
+
+--- Kenapa OSPF Dibutuhkan? ---
+
+  BGP di ISP menggunakan Loopback sebagai next-hop.
+  Contoh: CGW-C dapat rute 192.168.10.0/24 dari RR-A,
+          next-hop = 1.1.1.1 (loopback CGW-A).
+
+  Masalahnya: CGW-C tidak tahu cara reach 1.1.1.1!
+  1.1.1.1 bukan IP yang directly connected ke CGW-C.
+
+  SOLUSI: OSPF! OSPF mengiklankan semua IP loopback dan link backbone.
+  Jadi CGW-C tahu: "Untuk reach 1.1.1.1, saya lewat 10.10.10.6"
+
+  OSPF = fondasi agar iBGP bisa bekerja di backbone ISP.
+
+
+================================================================================
+6. RINGKASAN PROTOKOL
+================================================================================
+
+Protokol    | Fungsi                              | Di Mana
+------------|-------------------------------------|---------------------------
+OSPF Area 0 | Routing internal ISP backbone       | CGW-A, CGW-B, CGW-C, RR-A
+iBGP AS 99  | Distribusi rute customer dlm ISP    | CGW-A/B/C <-> RR-A
+eBGP        | Pertukaran rute ISP <-> customer    | CGW <-> PE-Cust
+
+AS Number | Pemilik    | Router
+----------|------------|-----------------------------
+99        | ISP        | CGW-A, CGW-B, CGW-C, RR-A
+100       | Customer A | PE-Cust-A
+200       | Customer B | PE-Cust-B
+300       | Customer C | PE-Cust-C
+
+Jumlah Node  : 16 (7 router Dynamips + 9 PC VPCS)
+Jumlah Link  : 16
+Semua Status : STARTED (running)
+
+
+================================================================================
+7. TUJUAN LAB INI
+================================================================================
+
+Lab ini mendemonstrasikan:
+
+  1. DESAIN JARINGAN ISP
+     -> Core routers (CGW) saling terhubung segitiga (redundant)
+     -> Jika satu link mati, data bisa lewat jalur lain
+
+  2. OSPF SEBAGAI IGP
+     -> Interior Gateway Protocol untuk reachability backbone
+     -> Semua router ISP tahu jalur ke semua loopback
+
+  3. iBGP DENGAN ROUTE REFLECTOR
+     -> Tidak perlu full-mesh iBGP (hemat koneksi)
+     -> RR-A merefleksikan rute ke semua core router
+
+  4. eBGP MULTI-CUSTOMER
+     -> Setiap customer punya AS sendiri
+     -> Rute customer diterima ISP dan didistribusikan via iBGP
+
+  5. TRANSIT TRAFFIC
+     -> Customer A bisa komunikasi ke Customer C
+     -> Data transit melalui backbone ISP
+
+
+================================================================================
+  Dibuat otomatis dari konfigurasi GNS3 project "coba"
+  Tanggal: 10 Februari 2026
+================================================================================
